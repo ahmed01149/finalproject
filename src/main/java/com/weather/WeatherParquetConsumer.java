@@ -24,7 +24,7 @@ import java.util.*;
 public class WeatherParquetConsumer {
     private static final String TOPIC = "weather-stations";
     private static final String BOOTSTRAP_SERVERS = "localhost:9092";
-    private static final int BUFFER_SIZE = 5; 
+    private static final int BUFFER_SIZE = 10000; 
     private static final List<WeatherMessage> buffer = new ArrayList<>();
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
