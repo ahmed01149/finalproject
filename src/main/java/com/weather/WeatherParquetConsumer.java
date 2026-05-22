@@ -17,6 +17,8 @@ import org.apache.avro.reflect.ReflectData;
 import java.io.File;
 import java.io.IOException;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.*;
 
 public class WeatherParquetConsumer {
@@ -50,7 +52,9 @@ public class WeatherParquetConsumer {
     private static final Schema AVRO_SCHEMA = new Schema.Parser().parse(SCHEMA_JSON);
 
     public static void main(String[] args) {
-        System.setProperty("hadoop.home.dir", new File(".").getAbsolutePath());
+        
+        System.setProperty("hadoop.home.dir", "C:\\hadoop");
+        System.setProperty("java.library.path", "C:\\hadoop\\bin;" + System.getProperty("java.library.path"));
 
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP_SERVERS);
@@ -69,10 +73,8 @@ public class WeatherParquetConsumer {
                 ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
                 for (ConsumerRecord<String, String> record : records) {
                     try {
-                        System.out.println(" Received from Kafka: " + record.value());
                         WeatherMessage weatherMessage = objectMapper.readValue(record.value(), WeatherMessage.class);
                         buffer.add(weatherMessage);
-                        System.out.println(" Added to buffer. Current size: " + buffer.size());
 
                         if (buffer.size() >= BUFFER_SIZE) {
                             flushToParquet();
@@ -88,8 +90,7 @@ public class WeatherParquetConsumer {
     }
 
     private static void flushToParquet() {
-        System.out.println(" Flushing buffer to Parquet file with partitioning...");
-
+        System.out.println(" Flushing buffer to Parquet...");
         Map<Long, List<WeatherMessage>> partitionedData = new HashMap<>();
         for (WeatherMessage msg : buffer) {
             partitionedData.computeIfAbsent(msg.stationId, k -> new ArrayList<>()).add(msg);
@@ -99,34 +100,36 @@ public class WeatherParquetConsumer {
             long stationId = entry.getKey();
             List<WeatherMessage> stationRecords = entry.getValue();
 
-            String folderPath = String.format("storage/year=2026/month=05/day=22/station_id=%d", stationId);
-            File storageDir = new File(folderPath);
-            if (!storageDir.exists()) {
-                storageDir.mkdirs();
-            }
+        
+            long ts = stationRecords.get(0).statusTimestamp;
+            java.time.LocalDate date = Instant.ofEpochMilli(ts < 10000000000L ? ts * 1000 : ts)
+                    .atZone(ZoneOffset.UTC).toLocalDate();
 
-            String filePath = storageDir.getAbsolutePath() + "/data_" + System.currentTimeMillis() + ".parquet";
+            String folderPath = String.format("storage/year=%d/month=%02d/day=%02d/station_id=%d",
+                date.getYear(), date.getMonthValue(), date.getDayOfMonth(), stationId);
+            
+            File storageDir = new File(folderPath);
+            storageDir.mkdirs();
+
+            String filePath = storageDir.getAbsolutePath() + "/data_" + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().substring(0, 8) + ".parquet";
+            
+            Configuration conf = new Configuration();
             Path path = new Path(filePath);
 
             try (ParquetWriter<WeatherMessage> writer = AvroParquetWriter.<WeatherMessage>builder(path)
-                    .withSchema(AVRO_SCHEMA)
-                    .withDataModel(ReflectData.get())
-                    .withConf(new Configuration())
-                    .withCompressionCodec(CompressionCodecName.SNAPPY)
-                    .build()) {
-
-                for (WeatherMessage msg : stationRecords) {
-                    writer.write(msg);
+                .withSchema(AVRO_SCHEMA)
+                .withDataModel(ReflectData.get())
+                .withConf(conf)
+                .withCompressionCodec(CompressionCodecName.SNAPPY)
+                .build()) {
+                    for (WeatherMessage msg : stationRecords) {
+                        writer.write(msg);
+                    }
+                    System.out.println("✅ Success: " + filePath);
+                } catch (IOException e) {
+                    System.err.println("❌ Write Error: " + e.getMessage());
                 }
-
-                System.out.println("🎉 Successfully wrote " + stationRecords.size() + " records to Parquet for station_id=" + stationId + " -> " + filePath);
-
-            } catch (IOException e) {
-                System.err.println("❌ Error writing Parquet file for station " + stationId);
-                e.printStackTrace();
-            }
         }
-
         buffer.clear();
     }
 }
